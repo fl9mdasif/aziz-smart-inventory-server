@@ -1,0 +1,7 @@
+# Ignores files from the host
+node_modules
+dist
+.env
+Dockerfile
+docker-compose.yml
+.git
