@@ -21,9 +21,13 @@ async function main() {
 
     server = app.listen(config.port, () => {
       console.log(`Example app listening on port ${config.port}`);
-    }); 
+    });
   } catch (err) {
+    // Fail fast on boot errors (e.g. bad DATABASE_URL) instead of leaving
+    // an unlistening process alive — a process manager can't restart what
+    // never exits.
     console.log(err);
+    process.exit(1);
   }
 }
 main();

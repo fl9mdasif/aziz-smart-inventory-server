@@ -1,4 +1,5 @@
 import httpStatus from 'http-status';
+import { Types } from 'mongoose';
 import AppError from '../../errors/AppErrors';
 import { TProduct, TVariant } from './interface.product';
 import { Product } from './model.product';
@@ -31,8 +32,10 @@ const toPublicShape = (product: any) => {
         slug: product.slug,
         thumbnail: product.thumbnail,
         category: product.category,
-        priceFrom: prices.length ? Math.min(...prices) : 0,
-        priceTo: prices.length ? Math.max(...prices) : 0,
+        // Lowest variant price — a "starting from" figure for a product that
+        // can have several sizes at different prices. Matches the client's
+        // TPublicProduct.price (single number), not a {priceFrom, priceTo} range.
+        price: prices.length ? Math.min(...prices) : 0,
         availability: availabilityFromVariants(variants),
     };
 };
@@ -135,7 +138,7 @@ const createProduct = async (payload: TProduct) => {
     await ActivityService.createLog({
         type: 'product',
         message: `Product "${payload.name}" (${payload.modelNo}) added to catalog with ${variants.length} size${variants.length !== 1 ? 's' : ''}`,
-        metadata: { productId: product._id as string },
+        metadata: { productId: (product._id as Types.ObjectId).toString() },
     });
 
     return product.populate('category', 'name slug');
@@ -292,13 +295,13 @@ const updateProduct = async (id: string, payload: Partial<TProduct>) => {
         await ActivityService.createLog({
             type: 'product',
             message: `Sizes/stock updated for "${product.name}"`,
-            metadata: { productId: product._id as string },
+            metadata: { productId: (product._id as Types.ObjectId).toString() },
         });
     } else {
         await ActivityService.createLog({
             type: 'product',
             message: `Product "${product.name}" details updated`,
-            metadata: { productId: product._id as string },
+            metadata: { productId: (product._id as Types.ObjectId).toString() },
         });
     }
 

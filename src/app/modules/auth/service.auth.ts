@@ -8,13 +8,6 @@ import bcrypt from 'bcrypt';
 import { createToken, verifyToken } from './utils.auth';
 import { JwtPayload } from 'jsonwebtoken';
 
-// register
-const registerUser = async (payload: TUser) => {
-  // create
-  const register = await User.create(payload);
-  return register;
-};
-
 // login
 const loginUser = async (payload: TLoginUser) => {
   //
@@ -24,6 +17,15 @@ const loginUser = async (payload: TLoginUser) => {
   // console.log(user);
   if (!user) {
     throw new AppError(httpStatus.NOT_FOUND, '', `This user is not found !'`);
+  }
+
+  // 1b. a deactivated account must not be able to log in and mint a fresh token
+  if (user.isBlocked) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      'This account has been deactivated. Contact an admin.',
+      'Account deactivated',
+    );
   }
 
   //   2. checking if the password is correct
@@ -50,11 +52,13 @@ const loginUser = async (payload: TLoginUser) => {
     config.jwt_access_expires_in as string,
   );
 
-  // refresh token
+  // refresh token — a separate, longer-lived secret from the access token,
+  // not the same secret/expiry (previously a copy-paste bug signed this
+  // with the access secret/expiry, defeating the point of a refresh token)
   const refreshToken = createToken(
     jwtPayload,
-    config.jwt_access_secret as string,
-    config.jwt_access_expires_in as string,
+    config.jwt_refresh_secret as string,
+    config.jwt_refresh_expires_in as string,
   );
 
   return {
@@ -142,22 +146,29 @@ const updateProfile = async (
 
 // create refresh token
 const refreshToken = async (token: string) => {
-  // console.log(token);
-  // checking if the given token is valid
-
+  // checking if the given token is valid — must verify against the refresh
+  // secret (loginUser signs it with jwt_refresh_secret, not the access one)
   const decoded = verifyToken(
     token,
-    config.jwt_access_secret as string,
+    config.jwt_refresh_secret as string,
   ) as JwtPayload;
 
-  const { iat, username } = decoded;
+  const { iat, email } = decoded;
 
-  // checking if the user is exist
-  const user = await User.isUserExists(username);
-  // console.log(decoded);
+  // checking if the user is exist — isUserExists queries by email, so the
+  // lookup key must be email, not username (a pre-existing bug here)
+  const user = await User.isUserExists(email);
 
   if (!user) {
     throw new AppError(httpStatus.NOT_FOUND, 'This user is not found !');
+  }
+
+  if (user.isBlocked) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      'This account has been deactivated. Contact an admin.',
+      'Account deactivated',
+    );
   }
 
   if (
@@ -168,7 +179,9 @@ const refreshToken = async (token: string) => {
   }
 
   const jwtPayload: any = {
+    _id: user._id as string,
     username: user.username,
+    email: user.email,
     role: user.role,
   };
 
@@ -185,7 +198,6 @@ const refreshToken = async (token: string) => {
 
 export const authServices = {
   loginUser,
-  registerUser,
   changePassword,
   refreshToken,
   getMe,

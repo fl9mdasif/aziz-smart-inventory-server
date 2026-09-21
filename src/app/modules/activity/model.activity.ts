@@ -23,4 +23,7 @@ const activitySchema = new Schema<TActivity>(
   },
 );
 
+activitySchema.index({ createdAt: -1 });
+activitySchema.index({ type: 1 });
+
 export const Activity = model<TActivity>('Activity', activitySchema);

@@ -17,17 +17,6 @@ const changePasswordValidationSchema = z.object({
 });
 
 
-const userRegistrationValidation = z.object({
-  body: z.object({
-    username: z.string().min(1).max(50),
-    email: z.string().email(),
-    password: z.string().min(6).max(30),
-    role: z.enum(['staff', 'admin', 'superAdmin']).default('staff'),
-    contactNumber: z.string(),
-    profilePicture: z.string().optional(),
-  }),
-});
-
 const updateProfileValidationSchema = z.object({
   body: z
     .object({
@@ -42,7 +31,6 @@ const updateProfileValidationSchema = z.object({
 });
 
 export const authValidations = {
-  userRegistrationValidation,
   loginValidationSchema,
   changePasswordValidationSchema,
   updateProfileValidationSchema,

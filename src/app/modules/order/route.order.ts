@@ -1,6 +1,7 @@
 import express from 'express';
 import auth from '../../middlewares/auth';
 import validateRequest from '../../middlewares/validateRequest';
+import { orderRateLimiter } from '../../middlewares/rateLimiters';
 import { USER_ROLE } from '../auth/const.auth';
 import { orderControllers } from './controller.order';
 import { orderValidations } from './validation.order';
@@ -11,6 +12,7 @@ const router = express.Router();
 // body: { productId, quantity, discount?, customerName?, customerContact?, note? }
 router.post(
     '/',
+    orderRateLimiter,
     auth(USER_ROLE.staff, USER_ROLE.admin, USER_ROLE.superAdmin),
     validateRequest(orderValidations.placeOrderValidationSchema),
     orderControllers.createOrder,

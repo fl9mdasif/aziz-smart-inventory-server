@@ -6,7 +6,7 @@ import { response } from '../../utils/sendResponse';
 
 
 const getRecentActivities = catchAsync(async (req: Request, res: Response) => {
-  const result = await ActivityService.getRecentActivities();
+  const result = await ActivityService.getRecentActivities(req.query);
   response.createSendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,

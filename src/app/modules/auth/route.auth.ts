@@ -3,20 +3,22 @@ import validateRequest from '../../middlewares/validateRequest';
 import { authValidations } from './validation.auth';
 import { authControllers } from './controller.auth';
 import auth from '../../middlewares/auth';
+import { authRateLimiter } from '../../middlewares/rateLimiters';
 import { USER_ROLE } from './const.auth';
 
 const router = express.Router();
 
-// register a user
-router.post(
-  '/register',
-  validateRequest(authValidations.userRegistrationValidation),
-  authControllers.registerUser,
-);
+// Deliberately no public self-registration route — accounts are created
+// internally via POST /users (admin/superAdmin only, see user module). A
+// public /register endpoint here previously accepted an arbitrary `role`
+// straight from the request body, letting anyone create a superAdmin
+// account; do not reintroduce it without forcing role to a safe default
+// server-side.
 
 // login a user
 router.post(
   '/login',
+  authRateLimiter,
   validateRequest(authValidations.loginValidationSchema),
   authControllers.loginUser,
 );
@@ -48,7 +50,7 @@ router.post(
 router.post('/logout', authControllers.logoutUser);
 
 // refresh token
-router.post('/refresh-token', authControllers.refreshToken);
+router.post('/refresh-token', authRateLimiter, authControllers.refreshToken);
 
 
 export const authRoute = router;

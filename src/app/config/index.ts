@@ -27,5 +27,11 @@ export default {
   cloud_api_secret: process.env.CLOUD_API_SECRET,
   plunk_secret_key: process.env.PLUNK_SECRET_KEY,
   admin_email: process.env.ADMIN_EMAIL,
-  site_url: process.env.SITE_URL || 'https://www.hydraazone.com',
+  // Comma-separated list of allowed CORS origins for the deployed client,
+  // e.g. "https://azizbrothers.vercel.app,https://www.azizbrothers.com" —
+  // set this once the client's real production domain is known (see app.ts).
+  client_urls: (process.env.CLIENT_URL ?? '')
+    .split(',')
+    .map((url) => url.trim())
+    .filter(Boolean),
 };

@@ -3,6 +3,7 @@ import globalErrorHandler from './app/middlewares/globalErrorHandler';
 import notFound from './app/middlewares/notFound';
 import sanitizeInput from './app/middlewares/sanitizeInput';
 import router from './app/routes';
+import config from './app/config';
 import cookieParser from 'cookie-parser';
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -10,12 +11,14 @@ import helmet from 'helmet';
 
 const app: Application = express();
 
+// Not deployed yet — once the client's production domain is known, set it
+// via the CLIENT_URL env var (comma-separated for multiple origins, e.g.
+// preview + production) rather than editing this file again. See
+// config/index.ts's `client_urls`.
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
-  // TODO: replace with Aziz Brothers' real production domain(s) once known
-  // 'https://azizbrothers.com',
-  // 'https://www.azizbrothers.com',
+  ...config.client_urls,
 ];
 
 const corsOptions = {

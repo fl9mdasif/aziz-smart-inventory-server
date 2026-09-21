@@ -39,6 +39,16 @@ const auth = (...requiredRoles: TUserRole[]) => {
       );
     }
 
+    // A deactivated account's existing (still-unexpired) token must stop
+    // working immediately, not just be blocked from a fresh login.
+    if (user.isBlocked) {
+      throw new AppError(
+        httpStatus.FORBIDDEN,
+        'This account has been deactivated. Contact an admin.',
+        'Account deactivated',
+      );
+    }
+
     // check if password update time
     if (
       user.passwordChangedAt &&

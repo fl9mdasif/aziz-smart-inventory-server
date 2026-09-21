@@ -50,8 +50,9 @@ Aziz Brothers imports and distributes rubber sheet rolls, fusing belts, and garm
 ## Features
 
 - 📦 **Catalog management** — categories and products with slugs, search, filtering, and pagination
-- 📉 **Automatic stock status** — `active` / `low_stock` / `out_of_stock` recomputed on every stock change, plus a dedicated restock queue sorted by urgency
-- 🧾 **Offline sale recording** — staff record a sale in seconds; price and product name are snapshotted so historical records never drift if the catalog changes later
+- 📏 **Product + variant model** — a product carries identity/commercial info once; each sellable size is a `variants[]` subdocument with its own SKU, dimensions, price, and stock
+- 📉 **Automatic stock status** — `active` / `low_stock` / `out_of_stock` recomputed per-variant on every stock change, plus a restock queue sorted by urgency (one row per undersupplied size)
+- 🧾 **Offline sale recording** — staff record a sale (product + which size) in seconds; size label, price, and product name are snapshotted so historical records never drift if the catalog changes later
 - 📊 **Sales analytics** — revenue and order counts by day/week/month/year, top-selling products, and revenue by category
 - 🕒 **Activity feed** — a running log of catalog, sale, and staff-account changes
 - 👥 **Role-based staff management** — `staff` / `admin` / `superAdmin`, with role promotion gated to `superAdmin`
@@ -71,7 +72,7 @@ Aziz Brothers imports and distributes rubber sheet rolls, fusing belts, and garm
 | Auth | JWT (access + refresh tokens), bcrypt password hashing |
 | Security | `helmet`, `express-rate-limit`, a hand-written Mongo-injection sanitizer |
 
-Product photos are plain URL strings (`Product.thumbnail`) — paste a hosted image link. There is no upload pipeline wired up yet; see [Known Limitations](#known-limitations).
+Product photos are plain URL strings (`Product.thumbnail`) — the server accepts a hosted image link and never handles the upload itself; the client uploads to Cloudinary from its own API route and passes the resulting URL. See [Known Limitations](#known-limitations).
 
 ---
 
@@ -90,7 +91,7 @@ src/
     ├── routes/index.ts         # Mounts every module's router under /api/v1
     ├── utils/                  # catchAsync, sendResponse, jwt helpers
     └── modules/
-        ├── auth/               # register, login, tokens, profile, password
+        ├── auth/               # login, tokens, profile, password (no public registration)
         ├── user/                # staff/admin account management
         ├── category/            # catalog categories
         ├── product/              # catalog products + stock + restock queue
@@ -141,6 +142,7 @@ Create a `.env` file in the project root:
 | `JWT_REFRESH_SECRET` | ✅ | Signing secret for refresh tokens |
 | `JWT_ACCESS_EXPIRES_IN` | ✅ | e.g. `10d` |
 | `JWT_REFRESH_EXPIRES_IN` | ✅ | e.g. `100d` |
+| `CLIENT_URL` | before going live | Comma-separated allowed CORS origin(s) for the deployed client, e.g. `https://azizbrothers.vercel.app,https://www.azizbrothers.com`. `localhost:3000`/`localhost:5173` are always allowed for local dev regardless of this. |
 
 Any other keys present in `.env` (`ADMIN_EMAIL`, `PLUNK_SECRET_KEY`, etc.) are unused leftovers from the template this project was scaffolded from and can be left blank.
 
@@ -175,9 +177,10 @@ Base URL: `/api/v1` · All request/response bodies are JSON · Authenticated req
 <details>
 <summary><strong>Auth</strong> — <code>/auth</code></summary>
 
+No public self-registration — accounts are created via `POST /users` (see Users below), not through this module.
+
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/register` | — | Create an account |
 | `POST` | `/login` | — | Returns an access token; sets auth cookies |
 | `GET` | `/me` | any | Get the caller's own profile |
 | `PATCH` | `/update-profile` | any | Update own `username` / `email` / `contactNumber` / `profilePicture` |
@@ -215,17 +218,21 @@ Base URL: `/api/v1` · All request/response bodies are JSON · Authenticated req
 <details>
 <summary><strong>Products</strong> — <code>/products</code></summary>
 
+A product carries identity/commercial info once — `modelNo`, `name`, `slug`, `description`, `thumbnail`, `category`, `brand?`, `moq?`, `samplesAvailable?`, `transportPackage?`, `origin?`, `hsCode?`, `note?` — and each sellable size lives in `variants[]`: `sku` (server-generated as `<MODEL>-<thickness>x<width>`), `thickness`/`width`/`length` (mm), `sizeLabel` (server-derived, e.g. `"0.4mm x 6000mm"`), `price`, `stockQuantity`, `minStockThreshold`, `status`, `restockIgnored`. Price and stock live on the variant, not the product.
+
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/`, `/:idOrSlug` | public* | Browse / view a product |
-| `GET` | `/restock-queue` | admin, superAdmin | Products at or below their stock threshold, ranked by urgency |
-| `POST` | `/` | admin, superAdmin | Create a product |
-| `PATCH` | `/:productId` | admin, superAdmin | Update fields / stock |
+| `GET` | `/`, `/:idOrSlug` | public* | Browse / view a product (with its variants) |
+| `GET` | `/restock-queue` | admin, superAdmin | One row per low/out-of-stock **size** (variant), ranked by urgency, carrying its parent product's `name`/`modelNo`/`category` |
+| `GET` | `/meta` | public | Distinct `brand`/`transportPackage`/`origin` values currently in use, for a searchable combobox-with-add-new on the client |
+| `POST` | `/` | staff, admin, superAdmin | Create a product with its initial `variants[]` |
+| `PATCH` | `/:productId` | staff, admin, superAdmin | Update product-level fields, optionally the whole `variants[]` array |
+| `PATCH` | `/:productId/variants/:variantId` | staff, admin, superAdmin | Edit one size's price/stock/dimensions without resaving the rest of the product (arrayFilters-based `$set`) |
 | `DELETE` | `/:productId` | admin, superAdmin | Delete |
 
-\* Optionally authenticated: an anonymous caller gets a shaped-down public response (`name`, `slug`, `thumbnail`, `category`, `price`, `availability`); a logged-in staff/admin session gets the full document.
+\* Optionally authenticated: an anonymous caller gets a shaped-down public response (`name`, `slug`, `thumbnail`, `category`, `price`, `availability` — `price` and `availability` rolled up across all variants); a logged-in staff/admin session gets the full document with every variant.
 
-Stock status (`active` / `low_stock` / `out_of_stock`) is recomputed automatically whenever `stockQuantity` changes, based on `minStockThreshold`.
+Stock status (`active` / `low_stock` / `out_of_stock`) is recomputed automatically per-variant whenever a variant's `stockQuantity` changes, based on that variant's `minStockThreshold`.
 
 </details>
 
@@ -234,16 +241,16 @@ Stock status (`active` / `low_stock` / `out_of_stock`) is recomputed automatical
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/` | staff, admin, superAdmin | Record a completed offline sale; deducts stock |
+| `POST` | `/` | staff, admin, superAdmin | Record a completed offline sale for one product **+ which size** (`productId` + `variantId`); deducts stock from that variant |
 | `GET` | `/` | staff, admin, superAdmin | List sales (search, filter, paginate) |
 | `GET` | `/:orderId` | staff, admin, superAdmin | Sale detail |
-| `PATCH` | `/:orderId/cancel` | admin, superAdmin | Void a sale, restore stock |
+| `PATCH` | `/:orderId/cancel` | admin, superAdmin | Void a sale, restore stock to the sold variant |
 | `DELETE` | `/:orderId` | admin, superAdmin | Delete a sale record |
-| `GET` | `/analytics/sales?period=daily\|weekly\|monthly\|yearly&from=&to=` | admin, superAdmin | Revenue & order counts over time |
+| `GET` | `/analytics/sales?period=daily\|weekly\|monthly\|yearly&from=&to=` | admin, superAdmin | Revenue & order counts over time (`to` is inclusive of the full day) |
 | `GET` | `/analytics/top-products?limit=` | admin, superAdmin | Best-selling products by revenue |
 | `GET` | `/analytics/by-category` | admin, superAdmin | Revenue grouped by category |
 
-An order is a **sale record**, not an e-commerce checkout — no shipping address, no payment gateway, no multi-step lifecycle. `status` is either `completed` or `cancelled`. `productName` and `unitPrice` are snapshotted at the moment of sale, so a historical record never changes if the product is edited or repriced afterward.
+An order is a **sale record**, not an e-commerce checkout — no shipping address, no payment gateway, no multi-step lifecycle. `status` is either `completed` or `cancelled`. `productId`+`variantId` identify what was sold; `productName`, `sizeLabel`, and `unitPrice` are snapshotted at the moment of sale, so a historical record never changes if the product is edited or repriced afterward.
 
 </details>
 
@@ -252,7 +259,7 @@ An order is a **sale record**, not an e-commerce checkout — no shipping addres
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/` | staff, admin, superAdmin | Recent catalog / sale / staff-account events, newest first |
+| `GET` | `/?type=&page=&limit=` | staff, admin, superAdmin | Catalog / sale / staff-account events, newest first, paginated (`limit` defaults to `10`); optional `type` filter (`order`\|`product`\|`user`\|`system`) |
 
 </details>
 
@@ -288,12 +295,14 @@ Errors are normalized the same way regardless of source (`AppError`, Zod, or a M
 ## Security
 
 - JWT authentication with explicit per-route role checks (`middlewares/auth.ts`); bcrypt-hashed passwords; `passwordChangedAt` invalidates tokens issued before a password change
+- A deactivated (`isBlocked`) account is rejected at login, at token refresh, **and** by the `auth` middleware itself — an already-issued token stops working immediately on deactivation, not just future logins
+- No public self-registration — accounts are created only via `POST /users` (admin/superAdmin), which cannot self-assign a role above what the creator is allowed to grant. There is no `/auth/register` route
 - `optionalAuth` on public catalog routes decodes a token if present but never rejects an anonymous request
 - `helmet()` for standard security headers
-- `express-rate-limit` limiters available for auth and high-volume write endpoints (`middlewares/rateLimiters.ts`)
+- `express-rate-limit` on `/auth/login`, `/auth/refresh-token`, and `POST /orders` (`middlewares/rateLimiters.ts`) — the classic brute-force / credential-stuffing / bot-order targets
 - Zod validation (`validateRequest`) on every mutating route
 - A **hand-written** Mongo-injection sanitizer (`middlewares/sanitizeInput.ts`) strips `$`-prefixed and dotted keys from `req.body` / `req.params`. `express-mongo-sanitize` is intentionally **not** used — it reassigns `req.query`, which is a read-only getter under Express 5 and throws at request time
-- CORS allowlist in `app.ts` — update it with Aziz Brothers' real production domain(s) before deploying to production
+- CORS allowlist in `app.ts`, driven by the `CLIENT_URL` env var — set it to the client's real production domain(s) before deploying to production (see [Environment Variables](#environment-variables))
 
 ---
 
@@ -304,7 +313,7 @@ Errors are normalized the same way regardless of source (`AppError`, Zod, or a M
 | **Docker** | `Dockerfile` + `docker-compose.yml` build and run the compiled server (`npm run build && npm start`) on port `5000`, reading secrets from `.env` |
 | **Vercel** | `vercel.json` routes all traffic to the compiled `dist/server.js` via `@vercel/node`. Run `npm run build` before deploying, or let Vercel's build step handle it |
 
-Recommended non-functional baseline: MongoDB Atlas M0 (free tier) is sufficient for this workload; indexes already exist on `Product.status`/`stockQuantity`, `Order.createdAt`/`status`, and `User.role`.
+Recommended non-functional baseline: MongoDB Atlas M0 (free tier) is sufficient for this workload; indexes already exist on `Product`'s text search fields, `category`, `variants.sku` (unique), `variants.status`/`restockIgnored`/`stockQuantity`, `Order.createdAt`/`status`/`productId`, `Activity.createdAt`/`type`, and `User.role`.
 
 ---
 
