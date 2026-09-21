@@ -2,51 +2,71 @@ import httpStatus from 'http-status';
 import { Types } from 'mongoose';
 import AppError from '../../errors/AppErrors';
 import { Product } from '../product/model.product';
+import { computeVariantStatus } from '../product/utils.product';
 import { Order } from './model.order';
 import { TOrder } from './interface.order';
 import { ActivityService } from '../activity/service.activity';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-/** Recompute a product's status from a new stock quantity and persist both. */
-const applyStockChange = async (productId: Types.ObjectId | string, newQty: number, minStockThreshold: number) => {
-    const status =
-        newQty === 0 ? 'out_of_stock' :
-            newQty < minStockThreshold ? 'low_stock' :
-                'active';
-
-    await Product.findByIdAndUpdate(productId, { stockQuantity: newQty, status });
+/**
+ * Price/stock now live per-variant (see the product module's migration to
+ * product+variants), not on the product itself — this targets one variant's
+ * subdocument via arrayFilters instead of the old top-level product update.
+ */
+const applyVariantStockChange = async (
+    productId: Types.ObjectId | string,
+    variantId: Types.ObjectId | string,
+    newQty: number,
+    minStockThreshold: number,
+) => {
+    const status = computeVariantStatus(newQty, minStockThreshold);
+    await Product.findOneAndUpdate(
+        { _id: productId, 'variants._id': variantId },
+        {
+            $set: {
+                'variants.$[v].stockQuantity': newQty,
+                'variants.$[v].status': status,
+            },
+        },
+        { arrayFilters: [{ 'v._id': variantId }] },
+    );
 };
 
 // ── Create Order (staff/admin/superAdmin records a completed sale) ─────────────
 const createOrder = async (
-    payload: Pick<TOrder, 'productId' | 'quantity' | 'discount' | 'customerName' | 'customerContact' | 'note'>,
+    payload: Pick<TOrder, 'productId' | 'variantId' | 'quantity' | 'discount' | 'customerName' | 'customerContact' | 'note'>,
     performedBy: string,
 ) => {
-    const { productId, quantity, discount = 0, customerName, customerContact, note } = payload;
+    const { productId, variantId, quantity, discount = 0, customerName, customerContact, note } = payload;
 
-    // ── 1. Fetch product ───────────────────────────────────────────────────────
+    // ── 1. Fetch product + locate the sold variant ─────────────────────────────
     const product = await Product.findById(productId);
     if (!product) {
         throw new AppError(httpStatus.NOT_FOUND, 'Product not found', 'Product not found');
     }
 
-    // ── 2. Inactive product guard ──────────────────────────────────────────────
+    const variant = product.variants.find((v) => v._id?.toString() === variantId.toString());
+    if (!variant) {
+        throw new AppError(httpStatus.NOT_FOUND, 'Size not found', 'No matching size found on this product');
+    }
+
+    // ── 2. Inactive variant guard ────────────────────────────────────────────────
     const orderableStatuses = ['active', 'low_stock'];
-    if (!orderableStatuses.includes(product.status as string)) {
+    if (!orderableStatuses.includes(variant.status as string)) {
         throw new AppError(
             httpStatus.BAD_REQUEST,
-            'This product is currently unavailable.',
-            'Product unavailable',
+            'This size is currently unavailable.',
+            'Variant unavailable',
         );
     }
 
     // ── 3. Stock validation ────────────────────────────────────────────────────
-    const available = product.stockQuantity ?? 0;
+    const available = variant.stockQuantity ?? 0;
 
     if (available === 0) {
         throw new AppError(
             httpStatus.BAD_REQUEST,
-            `"${product.name}" is currently out of stock`,
+            `"${product.name}" (${variant.sizeLabel}) is currently out of stock`,
             'Out of stock',
         );
     }
@@ -54,19 +74,21 @@ const createOrder = async (
     if (quantity > available) {
         throw new AppError(
             httpStatus.BAD_REQUEST,
-            `Only ${available} item${available !== 1 ? 's' : ''} available in stock for "${product.name}"`,
+            `Only ${available} item${available !== 1 ? 's' : ''} available in stock for "${product.name}" (${variant.sizeLabel})`,
             'Insufficient stock',
         );
     }
 
     // ── 4. Snapshot price & compute total ──────────────────────────────────────
-    const unitPrice = product.price;
+    const unitPrice = variant.price;
     const totalAmount = Math.max(0, unitPrice * quantity - discount);
 
     // ── 5. Save order ──────────────────────────────────────────────────────────
     const order = await Order.create({
         productId: product._id,
+        variantId: variant._id,
         productName: product.name,
+        sizeLabel: variant.sizeLabel,
         quantity,
         unitPrice,
         discount,
@@ -78,17 +100,17 @@ const createOrder = async (
         performedBy,
     });
 
-    // ── 6. Deduct stock & auto-update product status (single write) ────────────
-    await applyStockChange(productId, available - quantity, product.minStockThreshold ?? 5);
+    // ── 6. Deduct stock & auto-update variant status (single write) ────────────
+    await applyVariantStockChange(productId, variant._id as Types.ObjectId, available - quantity, variant.minStockThreshold ?? 5);
 
     // ── 7. Log Activity ────────────────────────────────────────────────────────
     await ActivityService.createLog({
         type: 'order',
-        message: `Sale #${order._id.toString().slice(-6).toUpperCase()} recorded for ${quantity} × "${product.name}"`,
-        metadata: { orderId: order._id.toString(), productId: product._id.toString() },
+        message: `Sale #${(order._id as Types.ObjectId).toString().slice(-6).toUpperCase()} recorded for ${quantity} × "${product.name}" (${variant.sizeLabel})`,
+        metadata: { orderId: (order._id as Types.ObjectId).toString(), productId: (product._id as Types.ObjectId).toString() },
     });
 
-    return order.populate('productId', 'name slug thumbnail status stockQuantity');
+    return order.populate('productId', 'name slug thumbnail modelNo');
 };
 
 // ── Get All Orders ─────────────────────────────────────────────────────────────
@@ -114,7 +136,7 @@ const getAllOrders = async (query: Record<string, unknown>) => {
 
     const [orders, total] = await Promise.all([
         Order.find(filter)
-            .populate('productId', 'name slug thumbnail status stockQuantity')
+            .populate('productId', 'name slug thumbnail modelNo')
             .populate('performedBy', 'username email role')
             .sort({ createdAt: -1 })
             .skip((pageNum - 1) * limitNum)
@@ -131,7 +153,7 @@ const getAllOrders = async (query: Record<string, unknown>) => {
 // ── Get Single Order ───────────────────────────────────────────────────────────
 const getOrderById = async (orderId: string) => {
     const order = await Order.findById(orderId)
-        .populate('productId', 'name slug thumbnail status stockQuantity')
+        .populate('productId', 'name slug thumbnail modelNo')
         .populate('performedBy', 'username email role');
 
     if (!order) {
@@ -156,18 +178,19 @@ const cancelOrder = async (orderId: string, cancelReason?: string) => {
     order.cancelReason = cancelReason;
     await order.save();
 
-    // ── Restore stock (single write) ───────────────────────────────────────────
+    // ── Restore stock to the sold variant (single write) ────────────────────────
     const product = await Product.findById(order.productId);
-    if (product) {
-        const restoredQty = (product.stockQuantity ?? 0) + order.quantity;
-        await applyStockChange(order.productId, restoredQty, product.minStockThreshold ?? 5);
+    const variant = product?.variants.find((v) => v._id?.toString() === order.variantId.toString());
+    if (product && variant) {
+        const restoredQty = (variant.stockQuantity ?? 0) + order.quantity;
+        await applyVariantStockChange(order.productId, order.variantId, restoredQty, variant.minStockThreshold ?? 5);
     }
 
     // ── Log Activity ──────────────────────────────────────────────────────────
     await ActivityService.createLog({
         type: 'order',
-        message: `Sale #${order._id.toString().slice(-6).toUpperCase()} cancelled`,
-        metadata: { orderId: order._id.toString() },
+        message: `Sale #${(order._id as Types.ObjectId).toString().slice(-6).toUpperCase()} cancelled`,
+        metadata: { orderId: (order._id as Types.ObjectId).toString() },
     });
 
     return order;
@@ -184,9 +207,10 @@ const deleteOrder = async (orderId: string) => {
     // stock was already restored by cancelOrder).
     if (order.status === 'completed') {
         const product = await Product.findById(order.productId);
-        if (product) {
-            const restoredQty = (product.stockQuantity ?? 0) + order.quantity;
-            await applyStockChange(order.productId, restoredQty, product.minStockThreshold ?? 5);
+        const variant = product?.variants.find((v) => v._id?.toString() === order.variantId.toString());
+        if (product && variant) {
+            const restoredQty = (variant.stockQuantity ?? 0) + order.quantity;
+            await applyVariantStockChange(order.productId, order.variantId, restoredQty, variant.minStockThreshold ?? 5);
         }
     }
 
@@ -211,7 +235,15 @@ const getSalesAnalytics = async (
     if (from || to) {
         match.createdAt = {};
         if (from) match.createdAt.$gte = new Date(from);
-        if (to) match.createdAt.$lte = new Date(to);
+        // `to` arrives as a date-only string (e.g. "2026-09-21"), which Date
+        // parses as UTC midnight — an $lte against that would exclude every
+        // order placed later that same day. Push it to the end of that day
+        // so "to today" actually includes today's sales.
+        if (to) {
+            const endOfDay = new Date(to);
+            endOfDay.setUTCHours(23, 59, 59, 999);
+            match.createdAt.$lte = endOfDay;
+        }
     }
 
     const result = await Order.aggregate([

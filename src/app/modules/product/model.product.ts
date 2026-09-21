@@ -1,8 +1,70 @@
 import { Schema, model } from 'mongoose';
-import { TProductDocument } from './interface.product';
+import { TProductDocument, TVariant } from './interface.product';
+import { computeSizeLabel, computeVariantStatus } from './utils.product';
+
+const variantSchema = new Schema<TVariant>(
+    {
+        sku: {
+            type: String,
+            required: [true, 'SKU is required'],
+            trim: true,
+            uppercase: true,
+        },
+        thickness: {
+            type: Number,
+            required: [true, 'Thickness (mm) is required'],
+            min: [0, 'Thickness cannot be negative'],
+        },
+        width: {
+            type: Number,
+            required: [true, 'Width (mm) is required'],
+            min: [0, 'Width cannot be negative'],
+        },
+        length: {
+            type: Number,
+            required: [true, 'Length (mm) is required'],
+            min: [0, 'Length cannot be negative'],
+        },
+        sizeLabel: {
+            type: String,
+            required: true,
+        },
+        price: {
+            type: Number,
+            required: [true, 'Price is required'],
+            min: [0, 'Price cannot be negative'],
+        },
+        stockQuantity: {
+            type: Number,
+            default: 0,
+            min: [0, 'Stock quantity cannot be negative'],
+        },
+        minStockThreshold: {
+            type: Number,
+            default: 5,
+            min: [0, 'Minimum stock threshold cannot be negative'],
+        },
+        status: {
+            type: String,
+            enum: ['active', 'out_of_stock', 'low_stock'],
+            default: 'active',
+        },
+        restockIgnored: {
+            type: Boolean,
+            default: false,
+        },
+    },
+    { _id: true },
+);
 
 const productSchema = new Schema<TProductDocument>(
     {
+        modelNo: {
+            type: String,
+            required: [true, 'Model number is required'],
+            trim: true,
+            uppercase: true,
+        },
         name: {
             type: String,
             required: [true, 'Product name is required'],
@@ -30,87 +92,57 @@ const productSchema = new Schema<TProductDocument>(
             type: String,
             required: [true, 'Thumbnail URL is required'],
         },
-        price: {
-            type: Number,
-            required: [true, 'Price is required'],
-            min: [0, 'Price cannot be negative'],
-        },
 
-        // ── Inventory ──────────────────────────────────────────────────────────
-        stockQuantity: {
-            type: Number,
-            default: 0,
-            min: [0, 'Stock quantity cannot be negative'],
-        },
-        minStockThreshold: {
-            type: Number,
-            default: 5,
-            min: [0, 'Minimum stock threshold cannot be negative'],
-        },
+        // ── Open-ended commercial fields — plain strings, not enums, because
+        // the supplier/origin/packaging list keeps growing (see client's
+        // combobox-with-add-new pattern for these three). ─────────────────────
+        brand: { type: String, trim: true },
+        moq: { type: String, trim: true },
+        samplesAvailable: { type: Boolean, default: false },
+        transportPackage: { type: String, trim: true },
+        origin: { type: String, trim: true },
+        hsCode: { type: String, trim: true },
+        note: { type: String, trim: true },
 
-        // ── Status ─────────────────────────────────────────────────────────────
-        status: {
-            type: String,
-            enum: ['active', 'draft', 'archived', 'out_of_stock', 'low_stock'],
-            default: 'draft',
-        },
-        // ── Restock Queue ───────────────────────────────────────────────────────
-        /** Admin can dismiss a product from the restock queue without restocking yet */
-        restockIgnored: {
-            type: Boolean,
-            default: false,
+        variants: {
+            type: [variantSchema],
+            required: true,
+            validate: {
+                validator: (v: TVariant[]) => Array.isArray(v) && v.length > 0,
+                message: 'At least one size (variant) is required',
+            },
         },
     },
     { timestamps: true },
 );
 
-// ── Pre-save: auto-manage status based on stock levels ─────────────────────────
-productSchema.pre('save', function (next) {
-    const qty = this.stockQuantity ?? 0;
-    const threshold = this.minStockThreshold ?? 5;
+// ── Pre-validate (not pre-save — validation runs before 'save' hooks, and
+// sizeLabel is a required field, so it must exist before that point): derive
+// each variant's sizeLabel/status/restockIgnored from its own stock levels.
+// This replaced the old per-product version of this hook, since price/stock
+// now live on each variant, not the product. ──────────────────────────────
+productSchema.pre('validate', function (next) {
+    for (const variant of this.variants) {
+        variant.sizeLabel = computeSizeLabel(variant.thickness, variant.width);
 
-    if (qty === 0) {
-        this.status = 'out_of_stock';
-        this.restockIgnored = false; // Always show in queue when it hits 0
-    } else if (qty < threshold) {
-        this.status = 'low_stock';
-        this.restockIgnored = false; // Always show in queue when it hits low stock
-    } else {
-        // Stock restored above threshold — clear ignored flag & set active
-        if (this.status === 'low_stock' || this.status === 'out_of_stock') {
-            this.status = 'active';
+        const qty = variant.stockQuantity ?? 0;
+        const threshold = variant.minStockThreshold ?? 5;
+        const newStatus = computeVariantStatus(qty, threshold);
+
+        if (newStatus === 'out_of_stock' || newStatus === 'low_stock') {
+            variant.restockIgnored = false; // always show in queue once it drops
+        } else if (variant.status === 'low_stock' || variant.status === 'out_of_stock') {
+            variant.restockIgnored = false; // stock restored — clear the ignored flag
         }
-        this.restockIgnored = false;
-    }
-    next();
-});
-
-productSchema.pre('findOneAndUpdate', function (next) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const update = this.getUpdate() as Record<string, any>;
-    if (!update) return next();
-
-    const qty = update?.stockQuantity ?? update?.$set?.stockQuantity;
-    const threshold = update?.minStockThreshold ?? update?.$set?.minStockThreshold;
-
-    if (qty !== undefined) {
-        const resolvedThreshold = threshold ?? 5;
-        if (qty === 0) {
-            update.$set = { ...update.$set, status: 'out_of_stock', restockIgnored: false };
-        } else if (qty < resolvedThreshold) {
-            update.$set = { ...update.$set, status: 'low_stock', restockIgnored: false };
-        } else {
-            update.$set = { ...update.$set, status: 'active', restockIgnored: false };
-        }
+        variant.status = newStatus;
     }
     next();
 });
 
 // ── Indexes for fast search / filter ──────────────────────────────────────────
-productSchema.index({ name: 'text', description: 'text' });
-productSchema.index({ category: 1, status: 1 });
-productSchema.index({ stockQuantity: 1 });
-// Compound index to make restock queue queries fast
-productSchema.index({ status: 1, restockIgnored: 1, stockQuantity: 1 });
+productSchema.index({ name: 'text', description: 'text', modelNo: 'text' });
+productSchema.index({ category: 1 });
+productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
+productSchema.index({ 'variants.status': 1, 'variants.restockIgnored': 1, 'variants.stockQuantity': 1 });
 
 export const Product = model<TProductDocument>('Product', productSchema);

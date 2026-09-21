@@ -84,11 +84,13 @@ Keep the model, drop the e-commerce leftovers, rename the generic role:
 
 Already correct: `name`, `slug`, `description?`, `thumbnail?`, `isActive`. Reuse as-is.
 
-### 5.3 Product — mostly no change (one open decision, see §12.5)
+### 5.3 Product — product + variants (built, replaces the flat model below)
 
-Already correct and already has the auto status-management logic (`active` / `low_stock` / `out_of_stock` on save and on update) which is exactly what "Low Stock Quantity" tracking needs. Keep: `name`, `slug`, `description`, `thumbnail`, `category`, `price`, `status`, `stockQuantity`, `minStockThreshold`, `restockIgnored`.
+**This decision is resolved: the owner confirmed the product needs multiple sizes per SKU family, so the flat model was replaced with a `Product` → `Variant` split.** A product now carries identity/commercial info once — `modelNo` (uppercase, search key), `name`, `slug`, `description`, `thumbnail`, `category`, `brand?`, `moq?`, `samplesAvailable?`, `transportPackage?`, `origin?`, `hsCode?`, `note?` — and each size is a `variants[]` subdocument carrying `sku` (server-generated as `<MODEL>-<thickness>x<width>`), `thickness`/`width`/`length` (mm), `sizeLabel` (server-derived, e.g. `"0.4mm x 6000mm"`), `price`, `stockQuantity`, `minStockThreshold`, `status`, and `restockIgnored`. `status`/`sizeLabel` auto-derive per variant on `pre('validate')` (moved from `pre('save')` since validation runs first and `sizeLabel` is required); a single-variant price/stock edit goes through `PATCH /:productId/variants/:variantId` (arrayFilters-based `$set`, computed in `service.product.ts`) rather than a full-document resave. `brand`/`transportPackage`/`origin` stay plain strings, not enums — the supplier list keeps growing, so the client renders these as a searchable combobox fed by `GET /products/meta`'s distinct-values list, with an "add new" escape hatch.
 
-**Open decision, needs the owner's confirmation before building further**: the current model is flat (one Product = one sellable item, no variant/SKU level). The original v1.0 PRD proposed a `Product` → `Variant` split so a single rubber-sheet product could carry multiple widths/lengths as SKUs. The current, working code does not have this. **Recommendation: keep the flat model for v1** (it's what's built, it's what "Inventory/Product - display product" describes, and each width/size can simply be its own `Product` row under the same `Category` in the meantime). Revisit variants only if the owner explicitly says he needs one product with multiple sub-SKUs tracked under a single detail page.
+**Downstream effect on Order (§5.4):** since price/stock moved off the product, an order now also records `variantId` and a `sizeLabel` snapshot alongside `productId`/`productName`; `applyStockChange` became `applyVariantStockChange`, targeting the specific variant subdocument instead of the product's top-level fields. `getSalesAnalytics`/`getTopProducts`/`getSalesByCategory` were untouched — they aggregate from `Order`'s own snapshotted fields and don't read `Product.price`/`stockQuantity` directly.
+
+**`GET /products/restock-queue`** is now an aggregation: it `$unwind`s `variants` and returns one row per low/out-of-stock *size*, each carrying its parent product's `name`/`modelNo`/`category` — not one row per product.
 
 ### 5.4 Order (`order` module) — rebuild, this is the biggest change
 
@@ -97,9 +99,11 @@ The current `Order` model is a copy of HydraaZone's customer-checkout order (`sh
 ```ts
 interface TOrder {
   productId: Types.ObjectId;
+  variantId: Types.ObjectId;  // which size was sold — Product.variants[]._id, added with the §5.3 product+variants migration
   productName: string;        // snapshot at time of sale
+  sizeLabel: string;          // snapshot of the variant's sizeLabel at time of sale
   quantity: number;
-  unitPrice: number;          // snapshot of Product.price at time of sale
+  unitPrice: number;          // snapshot of the variant's price at time of sale
   discount?: number;          // default 0
   totalAmount: number;        // (unitPrice * quantity) - discount
   customerName?: string;      // optional, free text — walk-in customer's name if given, not a full shipping profile
@@ -128,7 +132,9 @@ Already correct and generic (`type: 'order' | 'product' | 'system'`). Reuse as-i
 
 | Method & path | Role | Change |
 |---|---|---|
-| `POST /orders` | staff, admin, superAdmin | Was admin-only. Body drops `shippingAddress`, adds optional `customerName`/`customerContact`/`note`. `performedBy` set from the authenticated user, not the body. |
+| `POST /orders` | staff, admin, superAdmin | Was admin-only. Body drops `shippingAddress`, adds optional `customerName`/`customerContact`/`note`. `performedBy` set from the authenticated user, not the body. Since the §5.3 product+variants migration, body also requires `variantId` (which size was sold) alongside `productId`. |
+| `PATCH /products/:productId/variants/:variantId` | admin, superAdmin | New with §5.3 — edits one size's price/stock/dimensions without resaving the rest of the product; arrayFilters-based `$set`, not a schema hook |
+| `GET /products/meta` | public | New with §5.3 — distinct `brand`/`transportPackage`/`origin` values in use, for the client's searchable combobox-with-add-new fields |
 | `GET /orders` | staff, admin, superAdmin | Staff sees all orders (per owner's instruction — no restriction to "today only" like v1.0 proposed), filter/search unchanged in shape |
 | `PATCH /orders/:orderId/cancel` | admin, superAdmin | Replaces `PATCH /orders/:orderId/status` — there's no longer a status pipeline to walk through, just a completed→cancelled transition. Staff cannot cancel their own recorded sales (prevents quiet revenue hiding); admin/superAdmin only. |
 | `DELETE /orders/:orderId` | admin, superAdmin | Unchanged in role, logic simplified to match the new model (no `delivered`/`returned` branching) |

@@ -18,7 +18,7 @@ const registerUser = async (payload: TUser) => {
 // login
 const loginUser = async (payload: TLoginUser) => {
   //
-  // console.log(payload)
+
   // 1. checking if the user is exist
   const user = await User.isUserExists(payload.email);
   // console.log(user);
@@ -64,7 +64,7 @@ const loginUser = async (payload: TLoginUser) => {
   };
 };
 
-// change password
+// change password (admin/superAdmin)
 const changePassword = async (
   userData: JwtPayload,
   payload: { oldPassword: string; newPassword: string },

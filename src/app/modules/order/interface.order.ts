@@ -9,9 +9,11 @@ export type TOrderStatus = 'completed' | 'cancelled';
 // payment, and no multi-step lifecycle — a sale either happened or was voided.
 export interface TOrder {
     productId: Types.ObjectId;
+    variantId: Types.ObjectId;  // which size was sold (Product.variants[]._id)
     productName: string;       // snapshot of Product.name at time of sale
+    sizeLabel: string;         // snapshot of the variant's sizeLabel at time of sale
     quantity: number;
-    unitPrice: number;         // snapshot of Product.price at time of sale
+    unitPrice: number;         // snapshot of the variant's price at time of sale
     discount?: number;
     totalAmount: number;       // (unitPrice * quantity) - discount
     customerName?: string;     // optional, free text — walk-in customer's name

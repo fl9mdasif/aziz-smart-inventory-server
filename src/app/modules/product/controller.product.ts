@@ -37,7 +37,7 @@ const getSingleProduct = catchAsync(async (req, res) => {
     });
 });
 
-// ── Update ─────────────────────────────────────────────────────────────────────
+// ── Update (product-level fields, optionally the whole variants array) ────────
 const updateProduct = catchAsync(async (req, res) => {
     const { productId } = req.params;
     const result = await productServices.updateProduct(productId, req.body);
@@ -45,6 +45,18 @@ const updateProduct = catchAsync(async (req, res) => {
         statusCode: httpStatus.OK,
         success: true,
         message: 'Product updated successfully',
+        data: result,
+    });
+});
+
+// ── Update a single variant (price/stock edit) ─────────────────────────────────
+const updateVariant = catchAsync(async (req, res) => {
+    const { productId, variantId } = req.params;
+    const result = await productServices.updateVariant(productId, variantId, req.body);
+    response.createSendResponse(res, {
+        statusCode: httpStatus.OK,
+        success: true,
+        message: 'Variant updated successfully',
         data: result,
     });
 });
@@ -69,7 +81,19 @@ const getRestockQueue = catchAsync(async (req, res) => {
     response.createSendResponse(res, {
         statusCode: httpStatus.OK,
         success: true,
-        message: `Restock queue retrieved (${result.length} product${result.length !== 1 ? 's' : ''} need restocking)`,
+        message: `Restock queue retrieved (${result.length} size${result.length !== 1 ? 's' : ''} need restocking)`,
+        data: result,
+    });
+});
+
+// ── Meta (distinct brand/transportPackage/origin values) ──────────────────────
+// GET /api/products/meta
+const getProductMeta = catchAsync(async (req, res) => {
+    const result = await productServices.getProductMeta();
+    response.createSendResponse(res, {
+        statusCode: httpStatus.OK,
+        success: true,
+        message: 'Product meta retrieved successfully',
         data: result,
     });
 });
@@ -80,6 +104,8 @@ export const productControllers = {
     getAllProducts,
     getSingleProduct,
     updateProduct,
+    updateVariant,
     deleteProduct,
     getRestockQueue,
+    getProductMeta,
 };

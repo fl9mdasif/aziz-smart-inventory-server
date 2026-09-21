@@ -9,7 +9,14 @@ const orderSchema = new Schema<TOrderDocument>(
             ref: 'Product',
             required: true,
         },
+        // Not a `ref` — it's the _id of a subdocument inside Product.variants,
+        // not a document in its own collection.
+        variantId: {
+            type: Schema.Types.ObjectId,
+            required: true,
+        },
         productName: { type: String, required: true, trim: true },
+        sizeLabel: { type: String, required: true, trim: true },
 
         quantity: {
             type: Number,

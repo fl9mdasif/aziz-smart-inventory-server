@@ -9,6 +9,10 @@ const placeOrderValidationSchema = z.object({
             .string({ message: 'Product ID is required.' })
             .regex(objectIdRegex, 'Product ID must be a valid MongoDB ObjectId'),
 
+        variantId: z
+            .string({ message: 'Variant (size) ID is required.' })
+            .regex(objectIdRegex, 'Variant ID must be a valid MongoDB ObjectId'),
+
         quantity: z
             .number({ message: 'Quantity is required' })
             .int('Quantity must be a whole number')
